@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>V-Bot Dashboard</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+  <!-- HEADER -->
+  <header>
+    <div class="brand">
+      <h1>⬡ V-Bot</h1>
+      <span class="badge" id="statusBadge">Connecting...</span>
+    </div>
+    <div style="display: flex; gap: 12px;">
+      <button class="btn" onclick="openSettings()">⚙️ Settings</button>
+      <button class="btn danger" onclick="eStop()">⛔ E-STOP</button>
+    </div>
+  </header>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+    <button class="tab-btn" onclick="switchTab('whiteboard')">Whiteboard</button>
+    <button class="tab-btn" onclick="switchTab('terminal')">Terminal</button>
+  </div>
+
+  <!-- MAIN GRID -->
+  <main>
+
+    <!-- DASHBOARD TAB -->
+    <div id="tab-dashboard" class="tab-content active"
+      style="display: grid; grid-template-columns: 280px 1fr 340px; gap: 16px; width: 100%; height: 100%; overflow: hidden;">
+      <!-- LEFT: MACHINE STATUS -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Status</h2>
+          <div class="badge" id="stateBadge">Idle</div>
+        </div>
+        <div class="panel-body">
+
+          <div class="control-group">
+            <label class="control-label">Position (X, Y)</label>
+            <div class="stat-grid">
+              <div class="stat-card">
+                <div class="stat-label">X Axis</div>
+                <div class="stat-value accent" id="posX">0.0</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Y Axis</div>
+                <div class="stat-value accent" id="posY">0.0</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Cable Lengths (L, R)</label>
+            <div class="stat-grid">
+              <div class="stat-card">
+                <div class="stat-label">Left</div>
+                <div class="stat-value" id="cableL">0.0</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Right</div>
+                <div class="stat-value" id="cableR">0.0</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="toggle-row">
+            <span>Motors: <b id="motorStatusText" style="color:var(--success)">ALWAYS ON</b></span>
+            <div class="badge connected" id="motorBadge">ON</div>
+          </div>
+
+          <div class="toggle-row">
+            <span>Pen Down</span>
+            <div class="toggle-switch" id="penToggle" onclick="togglePen()"></div>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">Unified Geometry Setup</label>
+            <div style="margin-bottom:8px">
+              <span style="font-size:0.75rem; color:var(--muted)">Anchor Width (mm)</span>
+              <input type="number" id="geoWidth" placeholder="e.g. 1300">
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+              <div>
+                <span style="font-size:0.75rem; color:var(--muted)">Left Cable (mm)</span>
+                <input type="number" id="geoL" placeholder="Measure it!">
+              </div>
+              <div>
+                <span style="font-size:0.75rem; color:var(--muted)">Right Cable (mm)</span>
+                <input type="number" id="geoR" placeholder="Measure it!">
+              </div>
+            </div>
+            <button class="btn warn block" onclick="saveGeometry()">💾 SAVE & CALIBRATE</button>
+          </div>
+
+          <div style="text-align:center;">
+            <button class="btn warn sm block" style="margin-top:8px" onclick="forceEnableMotors()">⚡ Force Re-Enable
+              Motors</button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- DEBUG PANEL -->
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-header" style="background:rgba(255,165,2,0.1); cursor:pointer" onclick="toggleDebug()">
+          <h2 style="color:var(--warn)">📐 Math Debug (Click to toggle)</h2>
+        </div>
+        <div class="panel-body" id="debugBody" style="display:none; gap:8px; font-family:monospace; font-size:0.85rem">
+
+          <div
+            style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; border-bottom:1px solid var(--border); padding-bottom:8px">
+            <div>
+              <span style="color:var(--muted)">Steps L</span>
+              <div id="dbgStepsL" style="font-weight:bold">0</div>
+            </div>
+            <div>
+              <span style="color:var(--muted)">Steps R</span>
+              <div id="dbgStepsR" style="font-weight:bold">0</div>
+            </div>
+          </div>
+
+          <div
+            style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; border-bottom:1px solid var(--border); padding-bottom:8px">
+            <div>
+              <span style="color:var(--muted)">Conf. Steps/MM</span>
+              <div id="dbgStepsPerMm" style="color:var(--primary)">0</div>
+            </div>
+            <div>
+              <span style="color:var(--muted)">Conf. Width</span>
+              <div id="dbgWidth" style="color:var(--primary)">0</div>
+            </div>
+          </div>
+
+          <div style="background:var(--surface-light); padding:8px; border-radius:4px">
+            <div style="color:var(--muted); margin-bottom:4px">Calc Length (Steps / SpMM)</div>
+            <div style="display:flex; justify-content:space-between">
+              <span>L: <b id="dbgCalcL">0.00</b>mm</span>
+              <span>R: <b id="dbgCalcR">0.00</b>mm</span>
+            </div>
+          </div>
+
+          <div style="color:var(--muted); font-size:0.75rem; font-style:italic">
+            * If Calc Length != Real Length, Steps/MM is wrong.
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER: CONTROLS -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Manual Control</h2>
+          <select id="jogSpeed" style="width: auto; padding: 4px 8px; font-size: 0.85rem;"
+            onchange="updateSpeedConfig()">
+            <option value="500">Slow (500)</option>
+            <option value="2000" selected>Medium (2000)</option>
+            <option value="5000">Fast (5000)</option>
+          </select>
+        </div>
+        <div class="panel-body" style="align-items: center; justify-content: center;">
+
+          <div class="step-selector">
+            <div class="step-opt" onclick="setStep(0.1)">0.1</div>
+            <div class="step-opt" onclick="setStep(1)">1</div>
+            <div class="step-opt active" onclick="setStep(10)">10</div>
+            <div class="step-opt" onclick="setStep(50)">50</div>
+            <div class="step-opt" onclick="setStep(100)">100</div>
+          </div>
+
+          <div class="jog-pad">
+            <!-- Top Row -->
+            <button class="btn jog-btn" onmousedown="startDrive(event, -1, -1)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, -1, -1)" ontouchend="stopDrive()">↖</button>
+
+            <button class="btn jog-btn" onmousedown="startDrive(event, 0, -1)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, 0, -1)" ontouchend="stopDrive()">↑</button>
+
+            <button class="btn jog-btn" onmousedown="startDrive(event, 1, -1)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, 1, -1)" ontouchend="stopDrive()">↗</button>
+
+            <!-- Middle Row -->
+            <button class="btn jog-btn" onmousedown="startDrive(event, -1, 0)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, -1, 0)" ontouchend="stopDrive()">←</button>
+
+            <button class="btn jog-btn" onclick="homeXY()" style="font-size: 1rem;" title="Go to (0,0)">🏠</button>
+
+            <button class="btn jog-btn" onmousedown="startDrive(event, 1, 0)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, 1, 0)" ontouchend="stopDrive()">→</button>
+
+            <!-- Bottom Row -->
+            <button class="btn jog-btn" onmousedown="startDrive(event, -1, 1)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, -1, 1)" ontouchend="stopDrive()">↙</button>
+
+            <button class="btn jog-btn" onmousedown="startDrive(event, 0, 1)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, 0, 1)" ontouchend="stopDrive()">↓</button>
+
+            <button class="btn jog-btn" onmousedown="startDrive(event, 1, 1)" onmouseup="stopDrive()"
+              onmouseleave="stopDrive()" ontouchstart="startDrive(event, 1, 1)" ontouchend="stopDrive()">↘</button>
+          </div>
+
+          <!-- Reel Controls -->
+          <div
+            style="margin-top:16px; width:100%; max-width:260px; background:var(--surface-light); padding:8px; border-radius:8px; border:1px solid var(--border)">
+            <label class="control-label" style="text-align:center">Independent Reel Control (Hold)</label>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px">
+              <div style="text-align:center">
+                <span style="font-size:0.7rem; color:var(--muted)">LEFT MOTOR</span>
+                <div style="display:flex; gap:4px; margin-top:4px">
+                  <button class="btn sm" style="flex:1" onmousedown="startReel('left', -1)" onmouseup="stopReel()"
+                    onmouseleave="stopReel()" ontouchstart="startReel('left', -1)" ontouchend="stopReel()">In</button>
+                  <button class="btn sm" style="flex:1" onmousedown="startReel('left', 1)" onmouseup="stopReel()"
+                    onmouseleave="stopReel()" ontouchstart="startReel('left', 1)" ontouchend="stopReel()">Out</button>
+                </div>
+              </div>
+              <div style="text-align:center">
+                <span style="font-size:0.7rem; color:var(--muted)">RIGHT MOTOR</span>
+                <div style="display:flex; gap:4px; margin-top:4px">
+                  <button class="btn sm" style="flex:1" onmousedown="startReel('right', -1)" onmouseup="stopReel()"
+                    onmouseleave="stopReel()" ontouchstart="startReel('right', -1)" ontouchend="stopReel()">In</button>
+                  <button class="btn sm" style="flex:1" onmousedown="startReel('right', 1)" onmouseup="stopReel()"
+                    onmouseleave="stopReel()" ontouchstart="startReel('right', 1)" ontouchend="stopReel()">Out</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; gap:8px; margin-top:12px; width:100%; max-width:260px">
+            <button class="btn sm" style="flex:1" onclick="setHomeHere()" title="Set current position as (0,0)">📍 Set
+              Home Here</button>
+            <button class="btn sm" style="flex:1" onclick="calcPos()"
+              title="Calculate (X,Y) from current cable lengths">📐 Calc Pos</button>
+          </div>
+
+          <div style="margin-top: 24px; width: 100%; max-width: 400px;">
+            <label class="control-label">Manual Command</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="gcodeCmd" placeholder="G0 X100 Y100" onkeydown="if(event.key==='Enter') sendCmd()">
+              <button class="btn primary" onclick="sendCmd()">Send</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- RIGHT: JOB -->
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Job / File</h2>
+          <button class="btn sm" onclick="document.getElementById('fileUpload').click()">📂 Upload</button>
+          <input type="file" id="fileUpload" style="display:none" accept=".gcode,.nc,.gc" onchange="uploadFile(this)">
+        </div>
+        <div class="panel-body" style="padding: 0;">
+
+          <div id="jobStatus"
+            style="padding: 16px; border-bottom: 1px solid var(--border); background: var(--surface-light); display: none;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+              <span id="runFile" style="font-weight:600; color:var(--primary)">filename.gcode</span>
+              <span id="runPct">0%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" id="runProgress"></div>
+            </div>
+
+            <div class="control-group"
+              style="margin-top:12px; margin-bottom:12px; border:none; background:none; padding:0">
+              <label class="control-label" style="display:flex; justify-content:space-between; color:var(--text)">
+                <span>Feedrate Override</span>
+                <span id="speedVal" style="font-weight:bold; color:var(--warn)">100%</span>
+              </label>
+              <input type="range" id="speedSlider" min="10" max="250" value="100" style="width:100%"
+                oninput="updateSpeedVal(this.value)" onchange="commitSpeedOverride(this.value)">
+            </div>
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:12px;">
+              <button class="btn warn sm" onclick="api('/api/pause', 'POST')">⏯ Pause/Resume</button>
+              <button class="btn danger sm" onclick="api('/api/stop', 'POST')">⏹ Stop</button>
+            </div>
+          </div>
+
+          <div class="file-list" id="fileList">
+            <div style="padding: 20px; text-align: center; color: var(--muted);">Loading files...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WHITEBOARD TAB -->
+    <div id="tab-whiteboard" class="tab-content" style="display:none;">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Whiteboard Canvas</h2>
+          <div>
+            <button class="btn sm" onclick="wbDrawCalibrationPattern()">📏 Test Pattern</button>
+            <button class="btn sm" onclick="wbClear()">🗑️ Clear</button>
+            <button class="btn primary sm" onclick="wbGenerateAndRun()">▶️ Generate & Run</button>
+          </div>
+        </div>
+        <div class="panel-body">
+
+          <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px;">
+            <!-- SETUP / CALIBRATION -->
+            <div class="wb-control-group">
+              <label>1. Define Area</label>
+              <div style="display:flex; gap:4px; margin-bottom:4px">
+                <button class="btn sm" onclick="wbSetBound('TL')">Set Top-Left</button>
+                <button class="btn sm" onclick="wbGoToBound('TL')" title="Go to this position">Goto</button>
+                <span id="wbCoordTL" class="badge">S: ?</span>
+              </div>
+              <div style="display:flex; gap:4px;">
+                <button class="btn sm" onclick="wbSetBound('BR')">Set Btm-Right</button>
+                <button class="btn sm" onclick="wbGoToBound('BR')" title="Go to this position">Goto</button>
+                <span id="wbCoordBR" class="badge">S: ?</span>
+              </div>
+              <div style="margin-top:4px; font-size:0.75rem; color:var(--muted)">Use Joystick in Dashboard to move</div>
+            </div>
+
+            <!-- TOOLS -->
+            <div class="wb-control-group">
+              <label>2. Drawing Tools</label>
+              <div class="tool-row">
+                <button class="btn sm active" id="toolBrush" onclick="wbSetTool('brush')">🖌️ Brush</button>
+                <button class="btn sm" id="toolEraser" onclick="wbSetTool('eraser')">🧽 Eraser</button>
+                <button class="btn sm" id="toolLine" onclick="wbSetTool('line')">📏 Line</button>
+              </div>
+              <div style="margin-top:8px">
+                <label style="font-size:0.75rem;">Import SVG</label>
+                <input type="file" id="wbSvgUpload" accept=".svg" onchange="wbUploadSvg(this)" style="font-size:0.8rem">
+              </div>
+            </div>
+
+            <!-- SVG TRANSFORM -->
+            <div class="wb-control-group" id="wbSvgControls" style="display:none; border-color:var(--primary)">
+              <label style="color:var(--primary)">3. SVG Transform</label>
+              <div class="input-row">
+                <span>Scale</span>
+                <input type="range" min="0.1" max="3.0" step="0.1" value="1.0"
+                  oninput="wbSvgUpdate(this.value, 'scale')">
+              </div>
+              <div class="input-row">
+                <span>Rotate</span>
+                <input type="range" min="0" max="360" step="5" value="0" oninput="wbSvgUpdate(this.value, 'rotate')">
+              </div>
+              <div style="display:flex; gap:8px; margin-top:8px">
+                <button class="btn success sm" onclick="wbSvgStamp()">✅ Stamp</button>
+                <button class="btn danger sm" onclick="wbSvgCancel()">❌ Drop</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- CANVAS WRAPPER with graduations -->
+          <div class="canvas-container">
+            <div class="ruler-h"></div>
+            <div class="ruler-v"></div>
+            <canvas id="wbCanvas" width="800" height="600"></canvas>
+          </div>
+          <div style="font-size:0.75rem; color:var(--muted); margin-top:4px; text-align:center">
+            Canvas represents the physical area between Top-Left and Bottom-Right.
+          </div>
+
+        </div>
+      </div>
+
+
+      <!-- TERMINAL TAB -->
+      <div id="tab-terminal" class="tab-content" style="display:none; height:100%; flex-direction:column;">
+        <div class="panel" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+          <div class="panel-header">
+            <h2>G-Code Terminal</h2>
+            <div>
+              <button class="btn sm" onclick="termClear()">Clear</button>
+              <label style="display:inline-flex; align-items:center; gap:4px; font-size:0.8rem; margin-left:8px">
+                <input type="checkbox" id="termAutoScroll" checked> Auto-Scroll
+              </label>
+            </div>
+          </div>
+          <div class="panel-body" style="flex:1; display:flex; flex-direction:column; padding:0;">
+
+            <!-- LOG OUTPUT -->
+            <div id="termOutput"
+              style="flex:1; background:#1e1e1e; color:#0f0; font-family:monospace; padding:8px; overflow-y:scroll; font-size:0.9rem; white-space: pre-wrap;">
+              <div>> V-Bot Terminal Ready.</div>
+            </div>
+
+            <!-- INPUT -->
+            <div
+              style="padding:12px; background:var(--surface); border-top:1px solid var(--border); display:flex; gap:8px;">
+              <input type="text" id="termInput" placeholder="Enter G-Code... (e.g. G28, M114, G1 X10)"
+                style="flex:1; font-family:monospace;" onkeydown="if(event.key==='Enter') termSend()">
+              <button class="btn primary" onclick="termSend()">Send</button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+  </main>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-backdrop" id="settingsModal" onclick="if(event.target===this) closeSettings()">
+    <div class="modal">
+      <h2 style="margin-bottom: 16px;">Settings</h2>
+
+      <div class="control-group" style="margin-bottom: 16px;">
+        <label class="control-label">Machine Dimensions (mm)</label>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <div>
+            <span style="font-size:0.75rem; color:var(--muted)">Anchor Width</span>
+            <input type="number" id="s_anchorWidth">
+          </div>
+          <div>
+            <span style="font-size:0.75rem; color:var(--muted)">Gondola Width</span>
+            <input type="number" id="s_gondolaWidth">
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group" style="margin-bottom: 16px;">
+        <label class="control-label">Motion Config</label>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <div>
+            <span style="font-size:0.75rem; color:var(--muted)">Max Speed (mm/min)</span>
+            <input type="number" id="s_maxSpeed">
+          </div>
+          <div>
+            <span style="font-size:0.75rem; color:var(--muted)">Acceleration (mm/s²)</span>
+            <input type="number" id="s_accel">
+          </div>
+        </div>
+        <div style="margin-top:8px">
+          <span style="font-size:0.75rem; color:var(--muted)">Steps Per MM</span>
+          <input type="number" id="s_stepsPerMm">
+        </div>
+      </div>
+
+      <div class="control-group" style="margin-bottom: 16px;">
+        <label class="control-label">Override Cable Lengths</label>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <div>
+            <span style="font-size:0.75rem; color:var(--muted)">Left (mm)</span>
+            <input type="number" id="setL" value="0">
+          </div>
+          <div>
+            <span style="font-size:0.75rem; color:var(--muted)">Right (mm)</span>
+            <input type="number" id="setR" value="0">
+          </div>
+        </div>
+        <button class="btn warn block" onclick="overrideLengths()">Set Current Lengths</button>
+      </div>
+
+      <div class="control-group" style="margin-bottom: 16px;">
+        <label class="control-label">WiFi Settings</label>
+        <input type="text" id="ssid" placeholder="SSID" style="margin-bottom: 8px;">
+        <input type="password" id="pass" placeholder="Password">
+      </div>
+
+      <div class="control-group" style="margin-bottom: 16px;">
+        <label class="control-label">System</label>
+        <button class="btn primary block" style="margin-bottom: 8px;" onclick="window.open('/update', '_blank')">Update
+          Firmware (OTA)</button>
+        <button class="btn warn block" onclick="api('/api/reboot', 'POST')">Reboot System</button>
+      </div>
+
+      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button class="btn" onclick="closeSettings()">Cancel</button>
+        <button class="btn success" onclick="saveSettings()">Save Settings</button>
+      </div>
+      <div style="text-align:center; margin-top:12px;">
+        <button class="btn danger sm" onclick="api('/api/settings/reset', 'POST'); location.reload()">Reset to
+          Defaults</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JS MODULES -->
+  <script src="js/api.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/controls.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/files.js"></script>
+  <script src="js/whiteboard.js"></script>
+  <script src="js/terminal.js"></script>
+  <script src="js/main.js"></script>
+
+</body>
+
+</html>

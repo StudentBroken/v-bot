@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>V-Bot G-Code Generator</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-color: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #00d4ff;
+            --accent-hover: #00b8d4;
+            --danger-color: #ff4081;
+            --success-color: #00e676;
+            --border-radius: 12px;
+            --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background-color: var(--card-color);
+            padding: 2rem;
+            border-radius: var(--border-radius);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 800px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+
+        h1 {
+            grid-column: 1 / -1;
+            margin-top: 0;
+            text-align: center;
+            color: var(--accent-color);
+            font-weight: 300;
+            letter-spacing: 1px;
+            margin-bottom: 2rem;
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .inputs-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .input-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        label {
+            font-size: 0.85rem;
+            opacity: 0.7;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        input[type="number"] {
+            background: #2a2a2a;
+            border: 1px solid #333;
+            color: white;
+            padding: 0.8rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        input[type="number"]:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        /* D-Pad */
+        .d-pad {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, auto);
+            gap: 0.5rem;
+            max-width: 200px;
+            margin: 0 auto;
+        }
+
+        .btn {
+            background: #333;
+            border: none;
+            color: white;
+            padding: 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+
+        .btn:hover {
+            background: #444;
+            transform: translateY(-2px);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-move {
+            background: #2d2d2d;
+            border: 1px solid #444;
+        }
+
+        .btn-up {
+            grid-column: 2;
+        }
+
+        .btn-left {
+            grid-column: 1;
+            grid-row: 2;
+        }
+
+        .btn-right {
+            grid-column: 3;
+            grid-row: 2;
+        }
+
+        .btn-down {
+            grid-column: 2;
+            grid-row: 3;
+        }
+
+        .btn-center {
+            grid-column: 2;
+            grid-row: 2;
+            background: var(--accent-color);
+            color: #000;
+            font-size: 0.8rem;
+        }
+
+        .btn-center:hover {
+            background: var(--accent-hover);
+        }
+
+        /* Pen Controls */
+        .pen-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .btn-pen-up {
+            border-bottom: 2px solid var(--danger-color);
+        }
+
+        .btn-pen-down {
+            border-bottom: 2px solid var(--success-color);
+        }
+
+        /* Output Column */
+        .output-col {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            height: 100%;
+        }
+
+        textarea {
+            flex-grow: 1;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            color: #00ff9d;
+            /* Matrix vibes for code */
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            padding: 1rem;
+            border-radius: 8px;
+            resize: none;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            min-height: 300px;
+        }
+
+        .actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            color: #000;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-danger {
+            background: transparent;
+            border: 1px solid var(--danger-color);
+            color: var(--danger-color);
+        }
+
+        .btn-danger:hover {
+            background: var(--danger-color);
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>V-Bot G-Code Generator</h1>
+
+        <!-- Left Controls -->
+        <div class="controls">
+
+            <div class="inputs-group">
+                <div class="input-wrapper">
+                    <label>Step Size (mm)</label>
+                    <input type="number" id="stepSize" value="10" min="0.1" step="0.1">
+                </div>
+                <div class="input-wrapper">
+                    <label>Feed Rate (mm/min)</label>
+                    <input type="number" id="feedRate" value="3000" min="100" step="100">
+                </div>
+            </div>
+
+            <div class="d-pad">
+                <button class="btn btn-move btn-up" onclick="addMove('Y', 1)">▲</button>
+                <button class="btn btn-move btn-left" onclick="addMove('X', -1)">◀</button>
+                <button class="btn btn-center" onclick="addHome()">HOME</button>
+                <button class="btn btn-move btn-right" onclick="addMove('X', 1)">▶</button>
+                <button class="btn btn-move btn-down" onclick="addMove('Y', -1)">▼</button>
+            </div>
+
+            <div class="pen-controls">
+                <button class="btn btn-pen-up" onclick="addCommand('M5 ; Pen Up')">Pen UP (M5)</button>
+                <button class="btn btn-pen-down" onclick="addCommand('M3 ; Pen Down')">Pen DOWN (M3)</button>
+            </div>
+
+            <!-- Advanced Controls -->
+            <div class="inputs-group" style="margin-top: 1rem; border-top: 1px solid #333; padding-top: 1rem;">
+                <h3 style="grid-column: 1/-1; margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--accent-color);">
+                    Advanced</h3>
+
+                <div class="input-wrapper">
+                    <label>Radius (mm)</label>
+                    <input type="number" id="arcRadius" value="50" min="1">
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <button class="btn" style="font-size: 0.9rem;" onclick="addCircle(true)">⟳ CW Circle</button>
+                    <button class="btn" style="font-size: 0.9rem;" onclick="addCircle(false)">⟲ CCW Circle</button>
+                </div>
+            </div>
+
+            <div class="inputs-group">
+                <button class="btn" onclick="addCommand('G28 ; Home\nG92 X0 Y0 ; Zero Here')">Set Zero (G92)</button>
+                <button class="btn" onclick="addCommand('M0 ; Pause (Wait for Resume)')">Add Pause (M0)</button>
+            </div>
+
+            <div class="input-wrapper">
+                <label>Custom Command</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="customCmd" placeholder="e.g. G0 X100 Y100"
+                        style="flex-grow: 1; background: #2a2a2a; border: 1px solid #333; color: white; padding: 0.8rem; border-radius: 6px;">
+                    <button class="btn" style="padding: 0 1rem;" onclick="addCustom()">Add</button>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Right Output -->
+        <div class="output-col">
+            <label>Generated G-Code</label>
+            <textarea id="gcodeOutput" spellcheck="false"></textarea>
+
+            <div class="actions">
+                <button class="btn btn-danger" onclick="clearGcode()">Clear All</button>
+                <button class="btn btn-primary" onclick="downloadGcode()">Download .gcode</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const output = document.getElementById('gcodeOutput');
+
+        // Initial State
+        const HEADER = `; V-Bot Generated G-Code
+G21 ; Units in mm
+G91 ; Relative positioning
+`;
+        const FOOTER = `
+M5  ; Pen Up
+G90 ; Absolute positioning
+M2  ; End program`;
+
+        let commands = [];
+
+        function init() {
+            if (output.value.trim() === '') {
+                output.value = HEADER;
+            }
+        }
+
+        function addCommand(cmd) {
+            // Append to textarea logic
+            // If textarea was manually edited, we append to it.
+            // But let's try to keep it clean.
+            let current = output.value;
+            if (!current.endsWith('\n') && current.length > 0) current += '\n';
+            current += cmd;
+            output.value = current;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function addMove(axis, dir) { // dir is 1 or -1
+            const step = parseFloat(document.getElementById('stepSize').value) || 10;
+            const feed = parseFloat(document.getElementById('feedRate').value) || 3000;
+
+            let val = step * dir;
+            // Format to max 2 decimal places to keep it clean
+            val = Math.round(val * 100) / 100;
+
+            let cmd = `G1 ${axis}${val} F${feed}`;
+
+            // Add comment for readability
+            let comment = "";
+            if (axis === 'X') comment = val > 0 ? "Right" : "Left";
+            if (axis === 'Y') comment = val > 0 ? "Down" : "Up"; // V-Bot Y is positive down usually?
+            // Wait, standard CNC: Y+ is Up (North). But V-Bot config might differ.
+            // In V-Bot config.h: Y is right motor? No.
+            // Let's assume Standard Cartesian for "Up/Down" buttons.
+            // If "Up" button is clicked, we usually expect Y+ (or Y- depending on coordinate system).
+            // Standard CNC: Y+ is AWAY/UP. Y- is TOWARDS/DOWN.
+            // User asked "Up" button.
+            // Let's assume Y+ is Up in the visual sense.
+            // BUT V-Bot uses gravity? Usually Plotters: Y+ is Down (Gravity).
+            // Let's verify standard V-Bot behavior.
+            // The V-Bot `gcode.cpp` doesn't transform coordinates, just passes to `motion.moveTo`.
+            // `motion.cpp` maps Euclidean (x, y) to cable lengths.
+            // Origins usually Top-Left (0,0). So Y+ is DOWN.
+            // So UP Button should be Y- (negative). DOWN Button should be Y+ (positive).
+
+            if (axis === 'Y') {
+                // Correct for Screen Coordinates (Up is negative Y)
+                // Function received dir=1 for "Up" button visually?
+                // Let's fix the button onclicks first.
+                // visual "Up" -> Y-
+                // visual "Down" -> Y+
+                // My HTML buttons currently say: UP -> Y, 1. DOWN -> Y, -1.
+                // I should flip this logic in the function to match Screen Coords if Y+ is Down.
+
+                // Let's assume standard 2D Graphics coordinates (Y+ Down).
+                // So Button Up (Visual) -> Y -Step
+                // Button Down (Visual) -> Y +Step
+
+                // In my HTML:
+                // btn-up onclick="addMove('Y', 1)" <- This adds Positive Y. If Y+ is Down, this moves Down.
+                // So 'Up' button creates 'Down' movement.
+                // I will flip the sign in the JS generation for Y specifically to make buttons intuitive.
+
+                // Actually, verify G-Code standard. G-code usually Y+ is UP.
+                // If V-Bot treats (0,0) as Top-Left, then Y+ is Down.
+                // Let's assume V-Bot is Top-Left Origin (Graphics standard).
+                // So:
+                // UP Button -> Y Negative
+                // DOWN Button -> Y Positive
+
+                // However, the HTML buttons passed 1 and -1.
+                // I will treat the "dir" argument as "Visual Direction" (1=Positive/Right/Down?, -1=Negative/Left/Up?)
+                // Let's standardize:
+                // Right (X+)
+                // Left (X-)
+                // Down (Y+)
+                // Up (Y-)
+
+                // But my HTML calls: Up->1, Down->-1.
+                // I will invert Y axis commands to match "Screen Logic" where Up is Y-
+                if (axis === 'Y') {
+                    val = -val; // Flip sign so Up(1) becomes -Step, Down(-1) becomes +Step
+                    comment = val > 0 ? "Down" : "Up";
+                }
+            }
+
+            cmd += ` ; ${comment} ${Math.abs(val)}mm`;
+            addCommand(cmd);
+        }
+
+        function addCircle(cw) {
+            const r = parseFloat(document.getElementById('arcRadius').value) || 50;
+            const feed = parseFloat(document.getElementById('feedRate').value) || 3000;
+
+            // G2/G3 with I/J offsets. 
+            // A full circle relative to current position starts and ends at same point.
+            // We need to define the center offset (I, J).
+            // Let's assume we want to draw a circle "to the right" of current position? 
+            // Or "around" current position?
+            // Usually, to draw a circle *next* to the pen, we define center offset.
+            // Let's say center is (Radius, 0).
+            // G2 X0 Y0 I50 J0 -> Start=Current. End=Current. Center=(CurrentX+50, CurrentY).
+            // This draws a full circle with center 50mm to the right.
+
+            let i = r;
+            let j = 0;
+            // Direction check
+            let code = cw ? 'G2' : 'G3';
+            let dirStr = cw ? 'CW' : 'CCW';
+
+            // Use X0 Y0 (relative 0 move) implies end point = start point
+            // Or just omit X Y.
+            // V-Bot parser: EndX defaults to StartX if missing.
+            let cmd = `${code} I${i} J${j} F${feed} ; ${dirStr} Circle R${r}mm (Center offset X+${r})`;
+            addCommand(cmd);
+        }
+
+        function addHome() {
+            // G28 is nice but in Relative mode it might be weird if interpreted relatively?
+            // Usually G28 is absolute.
+            // But we are in G91 mode.
+            // V-Bot parser handles G28 by calling motion.moveToRapid(0,0). 
+            // It ignores G90/G91 stat for execution, but doesn't change the mode.
+            // It is safe to use.
+            addCommand('G90 ; Absolute Mode temporarily');
+            addCommand('G28 ; Home');
+            addCommand('G92 X0 Y0 ; Reset Coordinates');
+            addCommand('G91 ; Back to Relative');
+        }
+
+        function addCustom() {
+            const val = document.getElementById('customCmd').value.trim();
+            if (val) {
+                addCommand(val);
+                document.getElementById('customCmd').value = '';
+            }
+        }
+
+        function clearGcode() {
+            if (confirm('Clear all G-Code?')) {
+                output.value = HEADER;
+            }
+        }
+
+        function downloadGcode() {
+            let content = output.value;
+            // Append footer if not present?
+            // User might have added it manually or not want it.
+            // Let's just suggest it or append if "clean".
+            // Actually, just download what is seen.
+            if (!content.includes('M2')) {
+                content += '\n' + FOOTER;
+            }
+
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'generated_drawing.gcode';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+
+        // Initialize
+        init();
+
+    </script>
+
+</body>
+
+</html>

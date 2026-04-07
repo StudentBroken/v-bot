@@ -1,0 +1,233 @@
+/**
+ * V-Bot Climbing Gondola — Motor & Servo Test
+ * 
+ * Pinout (ESP32-S3 SuperMini):
+ *   GPIO 1 = X_STEP (Left motor)
+ *   GPIO 2 = X_DIR  (Left motor)
+ *   GPIO 4 = Y_STEP (Right motor)
+ *   GPIO 5 = Y_DIR  (Right motor)
+ *   GPIO 6 = SERVO  (SG90 pen lift)
+ *   GPIO 7 = ENABLE (shared A4988 EN, active LOW)
+ * 
+ * A4988 microstepping: 1/16 (MS1=MS2=MS3=HIGH, hardwired)
+ * Steps/rev: 200 * 16 = 3200 microsteps
+ * 
+ * Serial commands (115200 baud):
+ *   1 = Spin X motor 1 rev CW then CCW
+ *   2 = Spin Y motor 1 rev CW then CCW
+ *   3 = Servo sweep (pen UP → DOWN → UP)
+ *   4 = Spin BOTH motors 1 rev CW then CCW
+ *   5 = Toggle motor enable (ON/OFF)
+ *   x = Jog X motor +100 steps
+ *   X = Jog X motor -100 steps
+ *   y = Jog Y motor +100 steps
+ *   Y = Jog Y motor -100 steps
+ *   u = Pen UP
+ *   d = Pen DOWN
+ *   ? = Print this help menu
+ */
+
+#include <Arduino.h>
+#include <ESP32Servo.h>
+
+// ─── Pin definitions ────────────────────────────────────────────────────────
+#define X_STEP_PIN   1
+#define X_DIR_PIN    2
+#define Y_STEP_PIN   4
+#define Y_DIR_PIN    5
+#define SERVO_PIN    6
+#define ENABLE_PIN   7
+
+// ─── Motor parameters ───────────────────────────────────────────────────────
+#define STEPS_PER_REV   3200   // 200 full steps * 16 microsteps
+#define STEP_DELAY_US   200    // microseconds between step pulses (~2.5 rev/s)
+                               // Increase for slower, decrease for faster
+
+// ─── Servo parameters ──────────────────────────────────────────────────────
+#define SERVO_PEN_UP    60     // degrees — pen lifted off wall
+#define SERVO_PEN_DOWN  120    // degrees — pen pressed against wall
+// Adjust these based on your physical servo arm angle
+
+// ─── Global state ───────────────────────────────────────────────────────────
+Servo penServo;
+bool motorsEnabled = true;
+
+// ─── Helper: step one motor N steps in given direction ──────────────────────
+void stepMotor(uint8_t stepPin, uint8_t dirPin, int steps, uint16_t delayUs) {
+    // Set direction
+    digitalWrite(dirPin, steps > 0 ? HIGH : LOW);
+    int absSteps = abs(steps);
+    
+    for (int i = 0; i < absSteps; i++) {
+        digitalWrite(stepPin, HIGH);
+        delayMicroseconds(4);           // A4988 minimum pulse width: 1µs
+        digitalWrite(stepPin, LOW);
+        delayMicroseconds(delayUs);
+        
+        // Print progress every 800 steps (every quarter revolution)
+        if (i > 0 && i % 800 == 0) {
+            Serial.printf("  ...%d/%d steps\n", i, absSteps);
+        }
+    }
+}
+
+// ─── Spin test: 1 full rev CW, 1 full rev CCW ──────────────────────────────
+void spinTest(const char* name, uint8_t stepPin, uint8_t dirPin) {
+    Serial.printf("\n[%s] Spinning CW — 1 revolution (%d steps)...\n", name, STEPS_PER_REV);
+    stepMotor(stepPin, dirPin, STEPS_PER_REV, STEP_DELAY_US);
+    delay(500);
+    
+    Serial.printf("[%s] Spinning CCW — 1 revolution...\n", name);
+    stepMotor(stepPin, dirPin, -STEPS_PER_REV, STEP_DELAY_US);
+    delay(500);
+    
+    Serial.printf("[%s] ✓ Done\n", name);
+}
+
+// ─── Servo test: sweep UP → DOWN → UP ──────────────────────────────────────
+void servoSweep() {
+    Serial.println("\n[Servo] Pen UP...");
+    penServo.write(SERVO_PEN_UP);
+    delay(1000);
+    
+    Serial.println("[Servo] Pen DOWN...");
+    penServo.write(SERVO_PEN_DOWN);
+    delay(1000);
+    
+    Serial.println("[Servo] Pen UP...");
+    penServo.write(SERVO_PEN_UP);
+    delay(1000);
+    
+    Serial.println("[Servo] ✓ Done");
+}
+
+// ─── Toggle motor enable ────────────────────────────────────────────────────
+void toggleMotors() {
+    motorsEnabled = !motorsEnabled;
+    digitalWrite(ENABLE_PIN, motorsEnabled ? LOW : HIGH);  // Active LOW
+    Serial.printf("\n[Enable] Motors %s\n", motorsEnabled ? "ENABLED (EN=LOW)" : "DISABLED (EN=HIGH)");
+}
+
+// ─── Print help menu ────────────────────────────────────────────────────────
+void printMenu() {
+    Serial.println("\n╔══════════════════════════════════════════════╗");
+    Serial.println("║   V-Bot Motor & Servo Test                  ║");
+    Serial.println("╠══════════════════════════════════════════════╣");
+    Serial.println("║  1 = Test X motor (Left)  — 1 rev CW+CCW   ║");
+    Serial.println("║  2 = Test Y motor (Right) — 1 rev CW+CCW   ║");
+    Serial.println("║  3 = Test Servo sweep (UP→DOWN→UP)          ║");
+    Serial.println("║  4 = Test BOTH motors simultaneously        ║");
+    Serial.println("║  5 = Toggle motor enable ON/OFF             ║");
+    Serial.println("║  x = Jog X +100 steps    X = Jog X -100    ║");
+    Serial.println("║  y = Jog Y +100 steps    Y = Jog Y -100    ║");
+    Serial.println("║  u = Pen UP              d = Pen DOWN       ║");
+    Serial.println("║  ? = Show this menu                         ║");
+    Serial.println("╚══════════════════════════════════════════════╝");
+    Serial.printf("  Motors: %s | Pen: ready\n\n", motorsEnabled ? "ENABLED" : "DISABLED");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+void setup() {
+    Serial.begin(115200);
+    delay(2000);  // Wait for USB CDC to initialize on S3
+    
+    Serial.println("\n\n========================================");
+    Serial.println("  V-Bot Climbing Gondola — Test Sketch");
+    Serial.println("========================================");
+    
+    // Configure motor pins
+    pinMode(X_STEP_PIN, OUTPUT);
+    pinMode(X_DIR_PIN,  OUTPUT);
+    pinMode(Y_STEP_PIN, OUTPUT);
+    pinMode(Y_DIR_PIN,  OUTPUT);
+    pinMode(ENABLE_PIN, OUTPUT);
+    
+    // Enable motors (active LOW)
+    digitalWrite(ENABLE_PIN, LOW);
+    Serial.println("[Init] Motors ENABLED");
+    
+    // Initialize all step/dir pins LOW
+    digitalWrite(X_STEP_PIN, LOW);
+    digitalWrite(X_DIR_PIN,  LOW);
+    digitalWrite(Y_STEP_PIN, LOW);
+    digitalWrite(Y_DIR_PIN,  LOW);
+    
+    // Configure servo
+    penServo.attach(SERVO_PIN, 500, 2400);  // SG90 pulse range
+    penServo.write(SERVO_PEN_UP);           // Start with pen up
+    Serial.println("[Init] Servo attached, pen UP");
+    
+    // Print menu
+    printMenu();
+}
+
+void loop() {
+    if (Serial.available()) {
+        char cmd = Serial.read();
+        
+        switch (cmd) {
+            case '1':
+                spinTest("X-Left", X_STEP_PIN, X_DIR_PIN);
+                break;
+                
+            case '2':
+                spinTest("Y-Right", Y_STEP_PIN, Y_DIR_PIN);
+                break;
+                
+            case '3':
+                servoSweep();
+                break;
+                
+            case '4':
+                Serial.println("\n[Both] Testing X then Y...");
+                spinTest("X-Left", X_STEP_PIN, X_DIR_PIN);
+                spinTest("Y-Right", Y_STEP_PIN, Y_DIR_PIN);
+                break;
+                
+            case '5':
+                toggleMotors();
+                break;
+                
+            case 'x':
+                Serial.println("\n[Jog] X +100 steps");
+                stepMotor(X_STEP_PIN, X_DIR_PIN, 100, STEP_DELAY_US);
+                break;
+                
+            case 'X':
+                Serial.println("\n[Jog] X -100 steps");
+                stepMotor(X_STEP_PIN, X_DIR_PIN, -100, STEP_DELAY_US);
+                break;
+                
+            case 'y':
+                Serial.println("\n[Jog] Y +100 steps");
+                stepMotor(Y_STEP_PIN, Y_DIR_PIN, 100, STEP_DELAY_US);
+                break;
+                
+            case 'Y':
+                Serial.println("\n[Jog] Y -100 steps");
+                stepMotor(Y_STEP_PIN, Y_DIR_PIN, -100, STEP_DELAY_US);
+                break;
+                
+            case 'u':
+                Serial.println("\n[Servo] Pen UP");
+                penServo.write(SERVO_PEN_UP);
+                break;
+                
+            case 'd':
+                Serial.println("\n[Servo] Pen DOWN");
+                penServo.write(SERVO_PEN_DOWN);
+                break;
+                
+            case '?':
+                printMenu();
+                break;
+                
+            default:
+                // Ignore whitespace/newlines
+                if (cmd > ' ') {
+                    Serial.printf("Unknown command: '%c' — press ? for help\n", cmd);
+                }
+                break;
+        }
+    }
+}
