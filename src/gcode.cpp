@@ -16,23 +16,34 @@ void GCodeParser::init() {
 }
 
 void GCodeParser::update() {
-  // 1. Handle Pending Immediate Commands (from WebUI)
+  // 1. Handle immediate commands from WebUI — wait for motion idle first
   if (_hasPendingCommand && !motion.isBusy()) {
     String cmd = _pendingCommand;
     _hasPendingCommand = false;
-    _pendingCommand = ""; // Clear
-    consoleLog.printf("[GCode] Executing queued: %s\n", cmd.c_str());
+    _pendingCommand = "";
+    consoleLog.printf("[GCode] Executing: %s\n", cmd.c_str());
     _parseLine(cmd);
     return;
   }
 
-  // 2. Handle File Execution
   if (_state != GCODE_RUNNING)
     return;
-  if (motion.isBusy())
+
+  // 2. All lines parsed — wait for motion queue to drain, then finish
+  if (_parseIndex >= (int)_fileContent.length()) {
+    if (!motion.isBusy()) {
+      _state = GCODE_IDLE;
+      penServo.up();
+      consoleLog.println("[GCode] File complete");
+    }
+    return;
+  }
+
+  // 3. If motion queue is saturated, don't parse yet — let it drain a bit
+  if (motion.isQueueFull())
     return;
 
-  // Find next line
+  // 4. Parse the next non-empty, non-comment line
   while (_parseIndex < (int)_fileContent.length()) {
     int nl = _fileContent.indexOf('\n', _parseIndex);
     if (nl < 0)
@@ -41,20 +52,15 @@ void GCodeParser::update() {
     String line = _fileContent.substring(_parseIndex, nl);
     line.trim();
     _parseIndex = nl + 1;
-    _processedBytes = _parseIndex; // Track progress
-
+    _processedBytes = _parseIndex;
     _currentLine++;
 
     if (line.length() > 0 && line[0] != ';' && line[0] != '(') {
       _parseLine(line);
-      return; // Process next line on next update()
+      return; // one line per update() call
     }
+    // Skip blank lines and comments, continue looking
   }
-
-  // File complete
-  _state = GCODE_IDLE;
-  penServo.up();
-  consoleLog.println("[GCode] File complete");
 }
 
 void GCodeParser::queueCommand(const String &cmd) {
@@ -99,19 +105,13 @@ void GCodeParser::_parseLine(const String &line) {
   if (upper.length() == 0)
     return;
 
-  if (upper.startsWith("G0 ") || upper == "G0") {
-    // Parse target values
-    // Note: If X/Y is missing, we must use current logical position *minus
-    // offset* as default for Absolute
-    //       or 0 for Relative
-
-    float currentRelX = motion.getPenX() - _workOffsetX;
-    float currentRelY = motion.getPenY() - _workOffsetY;
+  if (upper.startsWith("G0 ") || upper == "G0" ||
+      upper.startsWith("G1 ") || upper == "G1") {
+    bool isRapid = upper[1] == '0';
 
     float valX = _parseValue(upper, 'X', NAN);
     float valY = _parseValue(upper, 'Y', NAN);
 
-    // Update Feedrate if present
     float f = _parseValue(upper, 'F', NAN);
     if (!isnan(f) && f > 0) {
       _feedRate = f;
@@ -120,39 +120,30 @@ void GCodeParser::_parseLine(const String &line) {
     float targetX, targetY;
 
     if (_absoluteMode) {
-      // G90: Coordinates are relative to Work Offset (Start Position)
       targetX = isnan(valX) ? motion.getPenX() : (valX + _workOffsetX);
       targetY = isnan(valY) ? motion.getPenY() : (valY + _workOffsetY);
     } else {
-      // G91: Coordinates are relative to Current Position
       targetX = motion.getPenX() + (isnan(valX) ? 0 : valX);
       targetY = motion.getPenY() + (isnan(valY) ? 0 : valY);
     }
 
-    // Check for Z
-    bool hasZ = _hasCode(upper, 'Z');
-    if (hasZ) {
+    // Z axis controls pen servo
+    if (_hasCode(upper, 'Z')) {
       float z = _parseValue(upper, 'Z', 0);
       bool targetDown = (z > 0.1);
-
       if (penServo.isDown() != targetDown) {
         if (targetDown)
           penServo.down();
         else
           penServo.up();
-        delay(300); // 300ms delay only on change
+        delay(300);
       }
     }
 
-    // Optimization: Ignore tiny moves (< 0.05mm) to reduce stutter
-    // But preserve absolute position tracking if needed?
-    // Actually motion.moveTo handles it, but let's filter here to save parsing
-    // time? mechanism No, motion.moveTo already has a check (dist < 0.01).
-    // Let's enforce it here too to avoid function call overhead?
-    // Let's just pass it.
-
-    // Apply speed scale
-    motion.moveTo(targetX, targetY, _feedRate * _speedScale);
+    if (isRapid)
+      motion.moveToRapid(targetX, targetY);
+    else
+      motion.moveTo(targetX, targetY, _feedRate * _speedScale);
 
   } else if (upper.startsWith("G2 ") || upper == "G2") {
     _processArc(upper, true); // CW

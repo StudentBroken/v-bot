@@ -3,436 +3,294 @@
 
 MotionController motion;
 
-// ── FreeRTOS Task Wrapper ──
-void motionTask(void *parameter) {
-  while (true) {
-    motion._taskWork();
-    // Yield to avoid watchdog trigger if idle (though _taskWork handles
-    // waiting)
-    vTaskDelay(1);
-  }
-}
+// ─────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────
 
 void MotionController::init() {
-  // Setup enable pin
+  // Enable stepper drivers immediately
   pinMode(ENABLE_PIN, OUTPUT);
-  digitalWrite(ENABLE_PIN, LOW); // FORCE ENABLE IMMEDIATELY
+  digitalWrite(ENABLE_PIN, LOW); // LOW = enabled on A4988
   _motorsEnabled = true;
 
-  // Max speeds for the steppers (hardware limits, not move limits)
-  // We set high max speed here, actual speed is controlled by runSpeed()
-  float maxStepsPerSec = 20000.0f;
-  _leftMotor.setMaxSpeed(maxStepsPerSec);
-  _rightMotor.setMaxSpeed(maxStepsPerSec);
-
-  // Acceleration is not used with runSpeed(), but good to set defaults
-  _leftMotor.setAcceleration(settings.acceleration * settings.steps_per_mm);
-  _rightMotor.setAcceleration(settings.acceleration * settings.steps_per_mm);
-
+  // Apply direction inversions from settings
   _leftMotor.setPinsInverted(settings.invert_left_dir, false, false);
   _rightMotor.setPinsInverted(settings.invert_right_dir, false, false);
 
-  // Restore position
-  float centerX = settings.anchor_width_mm / 2.0f;
-  float centerY = settings.draw_height_mm / 2.0f;
+  // Hardware speed ceiling — actual per-move speed is set in _startNextSegment
+  _leftMotor.setMaxSpeed(20000);
+  _rightMotor.setMaxSpeed(20000);
 
+  // Register both motors with the coordinator
+  _steppers.addStepper(_leftMotor);
+  _steppers.addStepper(_rightMotor);
+
+  // Restore last known position, or default to center of draw area
   if (settings.last_left_cable > 0.1f && settings.last_right_cable > 0.1f) {
-    Serial.println("[Motion] Restoring persisted position...");
+    Serial.println("[Motion] Restoring persisted position");
     setCableLengths(settings.last_left_cable, settings.last_right_cable);
-  } else if (centerX > 100 && centerY > 100) {
-    Serial.println("[Motion] No persistence, setting to Center...");
-    setPenPosition(centerX, centerY);
+  } else {
+    float cx = settings.anchor_width_mm / 2.0f;
+    float cy = settings.draw_height_mm / 2.0f;
+    Serial.println("[Motion] No persistence — defaulting to center");
+    setPenPosition(cx, cy);
   }
 
-  Serial.println("[Motion] Initialized & Motors ENABLED");
-  Serial.printf("[Motion] Boot Position: (%.1f, %.1f)\n", _penX, _penY);
-  syncPosition();
-  _persistenceDirty = false;
+  // Planning head starts at current position
+  _planX = _penX;
+  _planY = _penY;
 
-  // ── Start Motion Task ──
-  xTaskCreatePinnedToCore(motionTask,    // Function
-                          "MotionTask",  // Name
-                          8192,          // Stack size
-                          NULL,          // Param
-                          MOT_TASK_PRIO, // Priority
-                          &_taskHandle,  // Handle
-                          MOT_TASK_CORE  // Core
-  );
-  Serial.printf("[Motion] Task started on Core %d\n", MOT_TASK_CORE);
+  Serial.printf("[Motion] Init OK. Pen: (%.1f, %.1f) mm\n", _penX, _penY);
+  Serial.printf("[Motion] Cables: L=%.1f  R=%.1f mm\n", _leftCable, _rightCable);
 }
 
-// ── Main Loop Update ──
+// ─────────────────────────────────────────────────────────
+// update() — call every loop() iteration, no blocking
+// ─────────────────────────────────────────────────────────
+
 void MotionController::update() {
-  // This runs on the MAIN task/core.
-  // It handles persistence and status, but NOT step generation.
+  if (_state == MOTION_PAUSED)
+    return;
 
-  unsigned long now = millis();
+  if (_state == MOTION_RUNNING) {
+    // MultiStepper::run() advances both motors one step each if due.
+    // Returns true while either motor still has distance to go.
+    if (_steppers.run())
+      return;
 
-  // Auto-Save Persistence
-  if (_state == MOTION_IDLE && _persistenceDirty) {
-    if (now - _lastAutoSave > 10000) { // 10 seconds idle
+    // Both motors reached their targets — segment complete.
+    _state = MOTION_IDLE;
+    syncPosition(); // confirm _penX/_penY/_leftCable/_rightCable from actual steps
+    _persistenceDirty = true;
+  }
+
+  // Pop next segment from queue
+  if (!_queueEmpty()) {
+    _startNextSegment();
+    return;
+  }
+
+  // Auto-save position after 10 s of idle
+  if (_persistenceDirty) {
+    unsigned long now = millis();
+    if (now - _lastAutoSave > 10000) {
       _lastAutoSave = now;
       _persistenceDirty = false;
-
-      // Atomic read of position/cables?
-      // Since we are IDLE, values should be stable.
       settings.last_pen_x = _penX;
       settings.last_pen_y = _penY;
       settings.last_left_cable = _leftCable;
       settings.last_right_cable = _rightCable;
-
-      Serial.println("[Motion] Auto-saving persisted position...");
       settings.save();
+      Serial.println("[Motion] Position saved");
     }
   } else {
-    _lastAutoSave = now;
+    _lastAutoSave = millis();
   }
 }
 
-// ── Task Worker (The Engine) ──
-void MotionController::_taskWork() {
-  if (!_taskShouldRun) {
-    vTaskDelay(10);
-    return;
-  }
+// ─────────────────────────────────────────────────────────
+// _startNextSegment — pop one segment and hand it to MultiStepper
+// ─────────────────────────────────────────────────────────
 
-  // 1. Check for velocity override (Jogging)
-  if (_state == MOTION_DRIVING) {
-    // Implement velocity control here in the task?
-    // Or just run existing non-blocking logic?
-    // For now, let's keep velocity logic simple or implement later.
-    // Ideally, we convert velocity to short segments and queue them?
-    // No, direct driving is better for low latency.
+void MotionController::_startNextSegment() {
+  const Segment &seg = _queue[_tail];
+  _tail = (_tail + 1) % QUEUE_SIZE;
 
-    // TODO: Move velocity driving logic here.
-    // For now, fallback to IDLE if not driving.
-  }
+  long pos[2];
+  pos[0] = Kinematics::mmToSteps(seg.leftLen, settings.steps_per_mm);
+  pos[1] = Kinematics::mmToSteps(seg.rightLen, settings.steps_per_mm);
 
-  // 2. Process Queue
-  if (_state == MOTION_RUNNING || _state == MOTION_IDLE) {
-    MotionCommand cmd;
-    if (_popCommand(cmd)) {
-      _state = MOTION_RUNNING;
-      _processCommand(cmd);
-    } else {
-      _state = MOTION_IDLE;
-      // Idle wait
-      vTaskDelay(1);
-    }
-  }
+  // MultiStepper scales both motors' speeds so they arrive simultaneously.
+  // setMaxSpeed on each stepper sets the upper bound for that motor.
+  float speed_steps = (seg.feedRate / 60.0f) * settings.steps_per_mm;
+  speed_steps = constrain(speed_steps, 10.0f, 20000.0f);
+  _leftMotor.setMaxSpeed(speed_steps);
+  _rightMotor.setMaxSpeed(speed_steps);
+
+  _steppers.moveTo(pos);
+  _state = MOTION_RUNNING;
+
+  // Update logical position eagerly — pen is "heading here"
+  _penX = seg.targetX;
+  _penY = seg.targetY;
+  _leftCable = seg.leftLen;
+  _rightCable = seg.rightLen;
 }
 
-void MotionController::_processCommand(const MotionCommand &cmd) {
-  if (cmd.type == MotionCommand::DWELL) {
-    vTaskDelay(cmd.param1);
-    return;
-  }
-
-  if (cmd.type == MotionCommand::STOP) {
-    _leftMotor.stop();
-    _rightMotor.stop();
-    return;
-  }
-
-  if (cmd.type == MotionCommand::MOVE) {
-    // Interpolate? No, the queue *contains* segments.
-    // The "queueMove" function handles interpolation and pushes segments.
-    // So here we just execute the segment.
-
-    float targetX = cmd.x;
-    float targetY = cmd.y;
-
-    // Calculate lengths
-    float leftLen, rightLen;
-    Kinematics::cartesianToLengths(
-        targetX, targetY + settings.pen_offset_y_mm, settings.anchor_width_mm,
-        settings.gondola_width_mm, leftLen, rightLen);
-
-    // Coordinate move
-    _moveMotorsToLengths(leftLen, rightLen, cmd.feedRate);
-
-    // Update internal state
-    _penX = targetX;
-    _penY = targetY;
-    _leftCable = leftLen;
-    _rightCable = rightLen;
-    _persistenceDirty = true;
-  }
-}
-
-void MotionController::_moveMotorsToLengths(float leftLen, float rightLen,
-                                            float feedRate_mm_min) {
-  long leftSteps = Kinematics::mmToSteps(leftLen, settings.steps_per_mm);
-  long rightSteps = Kinematics::mmToSteps(rightLen, settings.steps_per_mm);
-
-  if (leftSteps == _leftMotor.currentPosition() &&
-      rightSteps == _rightMotor.currentPosition()) {
-    return;
-  }
-
-  _leftMotor.moveTo(leftSteps);
-  _rightMotor.moveTo(rightSteps);
-
-  _updateSpeedForFeedrate(feedRate_mm_min);
-
-  // BLOCKING RUN (inside Task)
-  while (_leftMotor.distanceToGo() != 0 || _rightMotor.distanceToGo() != 0) {
-    if (_abort) { // Emergency stop flag
-      break;
-    }
-    _leftMotor.runSpeedToPosition();
-    _rightMotor.runSpeedToPosition();
-  }
-}
-
-void MotionController::_updateSpeedForFeedrate(float feedRate_mm_min) {
-  float speed_mm_s = feedRate_mm_min / 60.0f;
-  float speed_steps = speed_mm_s * settings.steps_per_mm;
-
-  long leftDist = _leftMotor.distanceToGo();
-  long rightDist = _rightMotor.distanceToGo();
-  long maxDist = max(abs(leftDist), abs(rightDist));
-
-  if (maxDist > 0) {
-    float leftRatio = max(0.01f, (float)abs(leftDist) / maxDist);
-    float rightRatio = max(0.01f, (float)abs(rightDist) / maxDist);
-
-    float sL = speed_steps * leftRatio;
-    float sR = speed_steps * rightRatio;
-
-    // Apply signs
-    if (leftDist < 0)
-      sL = -sL;
-    if (rightDist < 0)
-      sR = -sR;
-
-    _leftMotor.setSpeed(sL); // setSpeed sets the speed for runSpeed()
-    _rightMotor.setSpeed(sR);
-  }
-}
-
-// ── Queue Management ──
+// ─────────────────────────────────────────────────────────
+// queueMove — segment a Cartesian line and push to queue
+// ─────────────────────────────────────────────────────────
 
 bool MotionController::queueMove(float x, float y, float feedRate, bool rapid) {
-  // Segmentation Logic (Moved from moveTo)
-  float dx = x - _penX; // Use _penX (logical pos) which tracks queue tip if we
-                        // manage it correctly
-  // Wait, _penX tracks *executed* position in the task.
-  // Ideally, queueMove should track the "planned" position.
-  // For simplicity, let's assume we segment based on the LAST QUEUED position?
-  // Or just rely on small segments being passed in?
-  //
-  // Standard Approach:
-  // The caller (GCodeParser) often sends lines. We break lines into segments
-  // here. But we need to know where we are starting from. Let's add a `_planX`,
-  // `_planY` to track the planning head.
+  float effectiveFeed = rapid ? settings.max_speed_mm_min : feedRate;
 
-  // Actually, to avoid complexity, let's just use _penX/_penY for now, BUT this
-  // ignores queued moves. FIX: We need `_planX` and `_planY` initialized to
-  // _penX/_penY. Since we are rewriting, let's add static variables or just use
-  // the current class members IF we update them immediately after queueing? NO,
-  // `_penX` is updated when the task *executes*. So we MUST track
-  // `_planX`/`_planY` separately.
-
-  // Hack for now: Use `_penX` but this assumes queue is empty? No that's bad.
-  // Let's assume the GCode parser sends small segments?
-  // No, G0 X100 is one command.
-
-  // Okay, let's implement local planning variables.
-  // But wait, `moveTo` in the old code did segmentation.
-  // We should do segmentation HERE, effectively blocking if the queue is full.
-
-  // To properly segment, we need the start point.
-  // If the queue is empty, start point is _penX, _penY.
-  // If queue is not empty, start point is the target of the last command in
-  // queue. This requires reading the tail of the queue.
-
-  float startX, startY;
-  if (_isQueueEmpty()) {
-    startX = _penX;
-    startY = _penY;
-  } else {
-    // Peek at last added command
-    int lastIdx = (_head - 1 + MOT_BUF_SIZE) % MOT_BUF_SIZE;
-    startX = _queue[lastIdx].x;
-    startY = _queue[lastIdx].y;
-  }
-
-  // Calculate Distance
-  float dy = y - startY; // Ignoring pen offset here? y is target Y?
-  // In `moveTo`, `y` was passed. `settings.pen_offset_y_mm` was added inside.
-  // Let's stay consistent. The arguments x, y are "Drawing Coordinates".
-
+  float startX = _planX;
+  float startY = _planY;
   float dx = x - startX;
+  float dy = y - startY;
   float dist = sqrtf(dx * dx + dy * dy);
 
-  if (dist < 0.05f)
-    return true; // Too small
+  if (dist < 0.05f) {
+    // Too small to bother — just update plan position
+    _planX = x;
+    _planY = y;
+    return true;
+  }
 
-  int segments = (int)(dist / settings.segment_length_mm);
-  if (segments < 1)
-    segments = 1;
-
+  int segments = max(1, (int)ceilf(dist / settings.segment_length_mm));
   float segDx = dx / segments;
   float segDy = dy / segments;
 
-  float curX = startX;
-  float curY = startY;
-
   for (int i = 0; i < segments; i++) {
-    curX += segDx;
-    curY += segDy;
+    // Backpressure: yield until there's room (1 ms at a time)
+    while (_queueFull())
+      delay(1);
 
-    MotionCommand cmd;
-    cmd.type = MotionCommand::MOVE;
-    cmd.x = curX;
-    cmd.y = curY;
-    cmd.feedRate = feedRate;
-    cmd.param1 = 0;
+    float tx = startX + segDx * (i + 1);
+    float ty = startY + segDy * (i + 1);
 
-    // SPINFULLY WAIT if queue is full
-    while (_isQueueFull()) {
-      vTaskDelay(1); // Block planner (Main Task) until space frees up
-    }
+    float leftLen, rightLen;
+    Kinematics::cartesianToLengths(tx, ty + settings.pen_offset_y_mm,
+                                   settings.anchor_width_mm,
+                                   settings.gondola_width_mm,
+                                   leftLen, rightLen);
 
-    _pushCommand(cmd);
+    Segment seg;
+    seg.leftLen  = leftLen;
+    seg.rightLen = rightLen;
+    seg.feedRate = effectiveFeed;
+    seg.targetX  = tx;
+    seg.targetY  = ty;
+
+    _queue[_head] = seg;
+    _head = (_head + 1) % QUEUE_SIZE;
   }
+
+  _planX = x;
+  _planY = y;
   return true;
 }
 
-bool MotionController::_isQueueFull() const {
-  int nextHead = (_head + 1) % MOT_BUF_SIZE;
-  return (nextHead == _tail);
-}
-
-bool MotionController::_isQueueEmpty() const { return (_head == _tail); }
-
-void MotionController::_pushCommand(const MotionCommand &cmd) {
-  _queue[_head] = cmd;
-  _head = (_head + 1) % MOT_BUF_SIZE;
-}
-
-bool MotionController::_popCommand(MotionCommand &cmd) {
-  if (_isQueueEmpty())
-    return false;
-  cmd = _queue[_tail];
-  _tail = (_tail + 1) % MOT_BUF_SIZE;
-  return true;
-}
-
-void MotionController::clearQueue() { _head = _tail = 0; }
-
-// ── Legacy / Direct Wrappers ──
+// ─────────────────────────────────────────────────────────
+// Public move API
+// ─────────────────────────────────────────────────────────
 
 void MotionController::moveTo(float x, float y, float feedRate_mm_min) {
-  queueMove(x, y, feedRate_mm_min);
+  queueMove(x, y, feedRate_mm_min, false);
 }
 
 void MotionController::moveToRapid(float x, float y) {
   queueMove(x, y, settings.max_speed_mm_min, true);
 }
 
+bool MotionController::isBusy() const {
+  return !_queueEmpty() || _state == MOTION_RUNNING;
+}
+
 void MotionController::stop() {
-  _abort = true;
   clearQueue();
-  // Also stop motors physically
   _leftMotor.stop();
   _rightMotor.stop();
-  // Wait for task updates?
-  // _abort flag should break the blocking loop in _taskWork
+  _state = MOTION_IDLE;
 }
 
 void MotionController::emergencyStop() {
-  stop();
-  _leftMotor.runToPosition();
-  _rightMotor.runToPosition();
+  clearQueue();
+  // Immediately zero velocity — do NOT call runToPosition
+  _leftMotor.setSpeed(0);
+  _rightMotor.setSpeed(0);
+  _leftMotor.stop();
+  _rightMotor.stop();
+  _state = MOTION_IDLE;
+  syncPosition();
   Serial.println("[Motion] E-STOP");
 }
 
-bool MotionController::isBusy() const {
-  return !_isQueueEmpty() || _state == MOTION_RUNNING;
-}
-
 void MotionController::pause() {
-  // How to pause? We need to stop popping from queue.
-  // _state = MOTION_PAUSED;
-  // We can just set a flag.
-  // NOTE: We don't have a specific Pause flag logic in _taskWork yet.
-  // Let's implement it.
   _state = MOTION_PAUSED;
 }
 
 void MotionController::resume() {
-  if (_state == MOTION_PAUSED) {
-    _state = MOTION_IDLE; // Process will pick up
-  }
+  if (_state == MOTION_PAUSED)
+    _state = MOTION_IDLE;
 }
 
-// ── Direct / Manual Callbacks ──
-// These should ideally bypass queue or lock it.
+void MotionController::clearQueue() {
+  _head = _tail = 0;
+  // Reset planning head to actual position
+  _planX = _penX;
+  _planY = _penY;
+}
+
+int MotionController::getQueueSpace() const {
+  return (QUEUE_SIZE - 1) - ((_head - _tail + QUEUE_SIZE) % QUEUE_SIZE);
+}
+
+// ─────────────────────────────────────────────────────────
+// releaseString — blocking, used during calibration
+// ─────────────────────────────────────────────────────────
 
 void MotionController::releaseString(float mm) {
-  // This needs to be synchronous or special command?
-  // Let's simple queue it as a special move? No, it's specific.
-  // Since we are calibrating, we likely aren't printing.
-  // We can just execute directly IF queue is empty.
+  // Wait for any queued moves to drain first
+  while (isBusy())
+    delay(1);
 
-  // SAFETY: Wait for queue empty
-  while (!_isQueueEmpty())
-    vTaskDelay(10);
+  float speed_steps = (settings.max_speed_mm_min / 60.0f) * settings.steps_per_mm;
+  speed_steps = constrain(speed_steps, 10.0f, 10000.0f);
 
-  long steps = Kinematics::mmToSteps(mm, settings.steps_per_mm);
-  _leftMotor.move(steps);
-  _rightMotor.move(steps);
-
-  // Blocking wait (since it's calibration, blocking Main is usually fine)
-  // BUT we must ensure the TASK doesn't interfere.
-  // Pause the task?
-  _taskShouldRun = false;
-
-  float speed_steps =
-      (settings.max_speed_mm_min / 60.0f) * settings.steps_per_mm;
   _leftMotor.setMaxSpeed(speed_steps);
   _rightMotor.setMaxSpeed(speed_steps);
 
-  while (_leftMotor.distanceToGo() != 0 || _rightMotor.distanceToGo() != 0) {
-    _leftMotor.runSpeedToPosition();
-    _rightMotor.runSpeedToPosition();
-  }
+  long deltaSteps = Kinematics::mmToSteps(mm, settings.steps_per_mm);
+  long leftTarget  = _leftMotor.currentPosition() + deltaSteps;
+  long rightTarget = _rightMotor.currentPosition() + deltaSteps;
 
-  _leftCable += mm;
+  long pos[2] = {leftTarget, rightTarget};
+  _steppers.moveTo(pos);
+
+  // Blocking run — safe here because it's calibration, not drawing
+  while (_steppers.run())
+    ;
+
+  _leftCable  += mm;
   _rightCable += mm;
-
-  _taskShouldRun = true;
+  syncPosition();
 }
 
+// ─────────────────────────────────────────────────────────
+// Position management
+// ─────────────────────────────────────────────────────────
+
 void MotionController::setCableLengths(float left, float right) {
-  _leftCable = left;
+  _leftCable  = left;
   _rightCable = right;
-  _leftMotor.setCurrentPosition(
-      Kinematics::mmToSteps(left, settings.steps_per_mm));
-  _rightMotor.setCurrentPosition(
-      Kinematics::mmToSteps(right, settings.steps_per_mm));
-  Kinematics::lengthsToCartesian(left, right, settings.anchor_width_mm,
-                                 settings.gondola_width_mm, _penX, _penY);
-  _penY -= settings.pen_offset_y_mm;
+  _leftMotor.setCurrentPosition(Kinematics::mmToSteps(left,  settings.steps_per_mm));
+  _rightMotor.setCurrentPosition(Kinematics::mmToSteps(right, settings.steps_per_mm));
+
+  float x, y;
+  if (Kinematics::lengthsToCartesian(left, right, settings.anchor_width_mm,
+                                     settings.gondola_width_mm, x, y)) {
+    _penX = x;
+    _penY = y - settings.pen_offset_y_mm;
+  }
+  _planX = _penX;
+  _planY = _penY;
 }
 
 void MotionController::setPenPosition(float x, float y) {
   float l, r;
   Kinematics::cartesianToLengths(x, y + settings.pen_offset_y_mm,
-                                 settings.anchor_width_mm,
-                                 settings.gondola_width_mm, l, r);
+                                  settings.anchor_width_mm,
+                                  settings.gondola_width_mm, l, r);
   setCableLengths(l, r);
 }
 
 void MotionController::syncPosition() {
-  long lSteps = _leftMotor.currentPosition();
-  long rSteps = _rightMotor.currentPosition();
-  float lMm = Kinematics::stepsToMm(lSteps, settings.steps_per_mm);
-  float rMm = Kinematics::stepsToMm(rSteps, settings.steps_per_mm);
-  _leftCable = lMm;
+  float lMm = Kinematics::stepsToMm(_leftMotor.currentPosition(),  settings.steps_per_mm);
+  float rMm = Kinematics::stepsToMm(_rightMotor.currentPosition(), settings.steps_per_mm);
+  _leftCable  = lMm;
   _rightCable = rMm;
+
   float x, y;
   if (Kinematics::lengthsToCartesian(lMm, rMm, settings.anchor_width_mm,
                                      settings.gondola_width_mm, x, y)) {
@@ -441,34 +299,71 @@ void MotionController::syncPosition() {
   }
 }
 
-float MotionController::getLivePenX() { return _penX; } // Simplified
+float MotionController::getLivePenX() { return _penX; }
 float MotionController::getLivePenY() { return _penY; }
+long  MotionController::getLeftSteps()  { return _leftMotor.currentPosition(); }
+long  MotionController::getRightSteps() { return _rightMotor.currentPosition(); }
 
-long MotionController::getLeftSteps() { return _leftMotor.currentPosition(); }
-long MotionController::getRightSteps() { return _rightMotor.currentPosition(); }
+// ─────────────────────────────────────────────────────────
+// Motor enable / disable
+// ─────────────────────────────────────────────────────────
 
 void MotionController::lockMotors() {
   digitalWrite(ENABLE_PIN, LOW);
   _motorsEnabled = true;
 }
+
 void MotionController::unlockMotors() {
-  // digitalWrite(ENABLE_PIN, HIGH);
   _motorsEnabled = false;
 }
-void MotionController::enableMotors() { lockMotors(); }
-void MotionController::disableMotors() { unlockMotors(); }
 
-void MotionController::jogMotors(float leftMm, float rightMm,
-                                 float speed_mm_min) {
-  // Direct jog?
-  releaseString(leftMm); // Basically same thing
+void MotionController::enableMotors() {
+  lockMotors();
+}
+
+void MotionController::disableMotors() {
+  // Physically release motors so the gondola can be moved by hand
+  digitalWrite(ENABLE_PIN, HIGH);
+  _motorsEnabled = false;
+}
+
+// ─────────────────────────────────────────────────────────
+// Jog helpers
+// ─────────────────────────────────────────────────────────
+
+void MotionController::jogMotors(float leftMm, float rightMm, float speed_mm_min) {
+  // Independent cable jog: compute resulting Cartesian position and queue it
+  float newLeft  = _leftCable  + leftMm;
+  float newRight = _rightCable + rightMm;
+  float x, y;
+  if (Kinematics::lengthsToCartesian(newLeft, newRight, settings.anchor_width_mm,
+                                     settings.gondola_width_mm, x, y)) {
+    float feed = speed_mm_min > 0 ? speed_mm_min : settings.max_speed_mm_min;
+    queueMove(x, y - settings.pen_offset_y_mm, feed);
+  }
 }
 
 void MotionController::jogCartesian(float dx, float dy, float speed_mm_min) {
-  queueMove(_penX + dx, _penY + dy,
-            speed_mm_min > 0 ? speed_mm_min : settings.max_speed_mm_min);
+  float feed = speed_mm_min > 0 ? speed_mm_min : settings.max_speed_mm_min;
+  queueMove(_penX + dx, _penY + dy, feed);
 }
 
 void MotionController::driveXY(float vx, float vy) {
-  // TODO: Implement velocity driving
+  // Velocity jog: replace the current jog target with a fresh move.
+  // vx / vy are in mm/s. We queue 0.5 s worth of travel each call.
+  // The WebUI should call this at ~5-10 Hz while the joystick is held.
+  float speed_mm_s = sqrtf(vx * vx + vy * vy);
+  if (speed_mm_s < 0.1f) {
+    stop();
+    return;
+  }
+
+  float speed_mm_min = constrain(speed_mm_s * 60.0f, 60.0f, settings.max_speed_mm_min);
+  float dt = 0.5f; // seconds of lookahead
+  float tx = _penX + vx * dt;
+  float ty = _penY + vy * dt;
+
+  // Clear any stale jog segments so direction changes feel responsive
+  clearQueue();
+  queueMove(tx, ty, speed_mm_min);
 }
