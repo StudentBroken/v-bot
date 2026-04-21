@@ -1,0 +1,41 @@
+# Build and compilation
+.pio/
+.vscode/
+build/
+dist/
+*.o
+*.a
+*.so
+*.a.o
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Environment
+.env
+.env.local
+
+# OS
+Thumbs.db
+.directory
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.temp
